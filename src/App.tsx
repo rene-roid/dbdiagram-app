@@ -74,6 +74,7 @@ export default function App() {
   const [split, setSplit] = useState(() => pref('split', 0.4))
   const [wrap, setWrap] = useState(() => pref('wrap', true))
   const [edgeStyle, setEdgeStyle] = useState<EdgeStyle>(() => pref('lineStyle', 'stepped'))
+  const [showGroups, setShowGroups] = useState(() => pref('showGroups', true))
   const [layout, setLayout] = useState<LayoutKind>(first.layout ?? DEFAULT_LAYOUT)
   const layoutRef = useRef(layout)
   layoutRef.current = layout
@@ -112,6 +113,7 @@ export default function App() {
   }, [dark])
   useEffect(() => setPref('wrap', wrap), [wrap])
   useEffect(() => setPref('lineStyle', edgeStyle), [edgeStyle])
+  useEffect(() => setPref('showGroups', showGroups), [showGroups])
 
   /* ---------- persistence ---------- */
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -464,6 +466,14 @@ export default function App() {
         <div className="sep" />
         <Dropdown label={`Sort: ${LAYOUTS.find((l) => l.kind === layout)?.label ?? ""}`} items={layoutItems} title="Auto sort: re-arrange all tables (remembered per diagram)" wide />
         <Dropdown label={`Lines: ${EDGE_STYLES.find((s) => s.value === edgeStyle)?.label}`} items={styleItems} title="How relations are drawn" />
+        <button
+          onClick={() => setShowGroups((v) => !v)}
+          className={showGroups ? 'on' : ''}
+          disabled={!model.groups.length}
+          title="Show or hide the table group boxes"
+        >
+          Groups ({model.groups.length})
+        </button>
         <button onClick={() => diagram.current?.fitView()}>Fit</button>
         <button onClick={() => void diagram.current?.exportPng()} title="Download the current view as an image">PNG</button>
         <button onClick={() => download()} title="Download the DBML source">Save .dbml</button>
@@ -519,6 +529,7 @@ export default function App() {
             initialPositions={session.positions}
             dark={dark}
             edgeStyle={edgeStyle}
+            showGroups={showGroups}
             layoutKind={layout}
             activeRel={popup?.kind === 'edge' ? popup.relId : null}
             onEdgeClick={onEdgeClick}

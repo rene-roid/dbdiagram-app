@@ -38,6 +38,8 @@ export interface EdgeLayerApi {
   redraw(): void
   /** relation id of the line under the given screen point, if any */
   hitTest(clientX: number, clientY: number): string | null
+  /** name of the table group whose title is under the given screen point, if any */
+  hitGroup(clientX: number, clientY: number): string | null
 }
 
 interface Props {
@@ -54,6 +56,8 @@ interface Props {
   flow: Map<string, FlowDir> | null
   /** TableGroups, drawn as tinted boxes behind their tables */
   groups: GroupDef[]
+  /** group the user clicked: only its tables and the relations between them stay lit */
+  focusGroup: string | null
   apiRef: MutableRefObject<EdgeLayerApi | null>
 }
 
@@ -137,12 +141,13 @@ function drawMarker(ctx: Pather, x: number, y: number, dir: Side, card: Cardinal
 }
 
 /** All relations on a single canvas: one cheap draw per frame instead of one SVG per relation. */
-export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activeRel, flow, groups, apiRef }: Props) {
+export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activeRel, flow, groups, focusGroup, apiRef }: Props) {
   const store = useStoreApi()
   const canvas = useRef<HTMLCanvasElement>(null)
-  const props = useRef({ edges, style, dark, activeRel, flow, groups })
-  props.current = { edges, style, dark, activeRel, flow, groups }
+  const props = useRef({ edges, style, dark, activeRel, flow, groups, focusGroup })
+  props.current = { edges, style, dark, activeRel, flow, groups, focusGroup }
   const hits = useRef<{ relId: string; path: Path2D }[]>([])
+  const titleHits = useRef<{ name: string; x: number; y: number; w: number; h: number }[]>([])
   const lastZoom = useRef(1)
   const raf = useRef(0)
 
@@ -162,8 +167,9 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
       }
       const ctx = el.getContext('2d')!
       const [tx0, ty0, zoom] = transform
-      const { edges, style, dark, activeRel, flow, groups } = props.current
+      const { edges, style, dark, activeRel, flow, groups, focusGroup } = props.current
       hits.current = []
+      titleHits.current = []
       lastZoom.current = zoom
 
       ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -196,6 +202,7 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
         }
         if (x0 === Infinity || x1 < vx0 || x0 > vx1 || y1 < vy0 || y0 > vy1) continue
         const hue = hueOfName(g.name)
+        ctx.globalAlpha = focusGroup && focusGroup !== g.name ? 0.25 : 1
         const size = Math.min(160, Math.max(15, 15 / zoom))
         const boxTop = y0 - PAD - size - 18
         ctx.beginPath()
@@ -211,14 +218,17 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
         ctx.font = `600 ${size}px ui-sans-serif, system-ui, sans-serif`
         ctx.textBaseline = 'alphabetic'
         ctx.fillText(g.name, x0 - PAD + 14, boxTop + size + 8)
+        titleHits.current.push({ name: g.name, x: x0 - PAD + 6, y: boxTop + 4, w: ctx.measureText(g.name).width + 16, h: size + 14 })
+        ctx.globalAlpha = 1
       }
+      const inGroup = focusGroup ? new Set(groups.find((g) => g.name === focusGroup)?.tables) : null
 
       const focus = new Set<string>()
       for (const n of nodeLookup.values()) if (n.selected) focus.add(n.id)
       if (hover.current) focus.add(hover.current)
       const focusRel = hoverEdge.current ?? activeRel
       const flowing = flow !== null && flow.size > 0
-      const dim = focus.size > 0 || focusRel !== null || flowing
+      const dim = focus.size > 0 || focusRel !== null || flowing || inGroup !== null
       const dimAlpha = focus.size > 0 ? 0.07 : flowing ? 0.12 : 0.2
 
       const baseWidth = Math.max(1.5, 1.7 / zoom)
@@ -296,7 +306,8 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
       // dimmed ones first so the highlighted relations always end up on top
       const active: EdgeRec[] = []
       for (const e of edges) {
-        if (dim && (focus.has(e.source) || focus.has(e.target) || e.relId === focusRel || flow?.has(e.id))) active.push(e)
+        if (inGroup && inGroup.has(e.source) && inGroup.has(e.target)) active.push(e)
+        else if (dim && (focus.has(e.source) || focus.has(e.target) || e.relId === focusRel || flow?.has(e.id))) active.push(e)
         else drawEdge(e, false)
       }
       for (const e of active) drawEdge(e, true)
@@ -322,7 +333,16 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
       }
       return null
     }
-    apiRef.current = { redraw: schedule, hitTest }
+    const hitGroup = (clientX: number, clientY: number) => {
+      const el = canvas.current
+      if (!el || !titleHits.current.length) return null
+      const rect = el.getBoundingClientRect()
+      const [tx, ty, zoom] = store.getState().transform
+      const x = (clientX - rect.left - tx) / zoom
+      const y = (clientY - rect.top - ty) / zoom
+      return titleHits.current.find((h) => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h)?.name ?? null
+    }
+    apiRef.current = { redraw: schedule, hitTest, hitGroup }
     const unsubscribe = store.subscribe(schedule)
     schedule()
     return () => {
@@ -336,7 +356,7 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
   // props changed: repaint
   useEffect(() => {
     apiRef.current?.redraw()
-  }, [edges, style, dark, activeRel, flow, groups, apiRef])
+  }, [edges, style, dark, activeRel, flow, groups, focusGroup, apiRef])
 
   return <canvas ref={canvas} className="edge-canvas" />
 }

@@ -13,7 +13,7 @@ import {
   type NodeChange,
 } from '@xyflow/react'
 import { toPng } from 'html-to-image'
-import type { DiagramModel, TableDef } from '../dbml'
+import type { DiagramModel, GroupDef, TableDef } from '../dbml'
 import { autoLayout, layoutModel, placeNew, type LayoutKind, type Positions } from '../layout'
 import { describeRelation, type Endpoint } from '../refs'
 import EdgeCanvas, { type EdgeLayerApi, type EdgeRec, type EdgeStyle, type FlowDir } from './EdgeCanvas'
@@ -21,6 +21,7 @@ import TableNode, { type TableFlowNode } from './TableNode'
 import { SelectedRowContext, TableActionsContext, rowKey, type TableActions } from './tableActions'
 
 const nodeTypes = { table: TableNode }
+const NO_GROUPS: GroupDef[] = []
 
 export interface DiagramHandle {
   autoLayout(kind: LayoutKind): void
@@ -40,6 +41,8 @@ interface Props {
   initialPositions: Positions
   dark: boolean
   edgeStyle: EdgeStyle
+  /** draw the TableGroup boxes behind their tables */
+  showGroups: boolean
   /** sort mode used when a diagram without saved positions is first laid out */
   layoutKind: LayoutKind
   /** relation whose edit menu is open (kept highlighted) */
@@ -72,7 +75,7 @@ const rowAt = (x: number, y: number) => {
 }
 
 const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
-  const { model, initialPositions, dark, edgeStyle, activeRel, onPositionsChange } = props
+  const { model, initialPositions, dark, edgeStyle, showGroups, activeRel, onPositionsChange } = props
   const rf = useReactFlow()
   const wrap = useRef<HTMLDivElement>(null)
   const positions = useRef<Positions>(initialPositions)
@@ -82,6 +85,7 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
   const hover = useRef<string | null>(null)
   const hoverEdge = useRef<string | null>(null)
   const moveFrame = useRef(0)
+  const [overTitle, setOverTitle] = useState(false)
   const [tip, setTip] = useState<{ x: number; y: number; text: string } | null>(null)
   const history = useRef<{ past: Positions[]; future: Positions[] }>({ past: [], future: [] })
   const [, bump] = useState(0)
@@ -123,6 +127,19 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
   // Clicked column row or relation line: its relations get flowing dots, running from the "one" side to the "many" side.
   const [selRow, setSelRow] = useState<{ tableId: string; column: string } | null>(null)
   const [selRel, setSelRel] = useState<string | null>(null)
+  // Clicked group title: the other tables fade out. Cleared by Esc, by clicking the title again or empty canvas.
+  const [groupPick, setGroupPick] = useState<string | null>(null)
+  const focusGroup = showGroups && model.groups.some((g) => g.name === groupPick) ? groupPick : null
+  const displayNodes = useMemo(() => {
+    if (!focusGroup) return nodes
+    const members = new Set(model.groups.find((g) => g.name === focusGroup)?.tables)
+    return nodes.map((n) => (members.has(n.id) ? n : { ...n, className: 'dimmed' }))
+  }, [nodes, focusGroup, model.groups])
+  const pickGroup = (name: string | null) => {
+    setGroupPick(name)
+    const g = name ? model.groups.find((x) => x.name === name) : null
+    if (g) rf.fitView({ nodes: g.tables.filter((id) => rf.getNode(id)).map((id) => ({ id })), padding: 0.2, duration: 400 })
+  }
   const flow = useMemo(() => {
     let match: ((e: EdgeRec) => boolean) | null = null
     if (selRel) match = (e) => e.relId === selRel
@@ -140,15 +157,16 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
   }, [selRow, selRel, edges, model])
 
   useEffect(() => {
-    if (!selRow && !selRel) return
+    if (!selRow && !selRel && !focusGroup) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || (e.target as HTMLElement | null)?.closest('input, textarea, .cm-editor')) return
       setSelRow(null)
       setSelRel(null)
+      setGroupPick(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selRow, selRel])
+  }, [selRow, selRel, focusGroup])
 
   // Rebuild nodes when the model changes, keeping positions of tables that already exist.
   useEffect(() => {
@@ -406,6 +424,7 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
       const b = wrap.current?.getBoundingClientRect()
       if (!b) return
       setHoverEdge(edgeApi.current?.hitTest(clientX, clientY) ?? null, clientX - b.left, clientY - b.top)
+      setOverTitle(edgeApi.current?.hitGroup(clientX, clientY) != null)
     })
   }
 
@@ -420,15 +439,24 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
   return (
     <TableActionsContext.Provider value={actions}>
      <SelectedRowContext.Provider value={selRow ? rowKey(selRow.tableId, selRow.column) : null}>
-      <div className={`diagram-wrap${link ? ' linking' : ''}${tip ? ' edge-hover' : ''}`} ref={wrap}>
+      <div className={`diagram-wrap${link ? ' linking' : ''}${tip || overTitle ? ' edge-hover' : ''}`} ref={wrap}>
         <ReactFlow
-          nodes={nodes}
+          nodes={displayNodes}
           nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
           onNodeDragStart={onDragStart}
           onNodeDragStop={commitPositions}
           onPaneClick={(e) => {
-            // a click on a relation line selects it, a click on empty canvas clears the selection
+            // a click on a group title focuses that group, on a relation line selects it, on empty canvas clears both
+            const group = edgeApi.current?.hitGroup(e.clientX, e.clientY) ?? null
+            if (group) {
+              setSelRow(null)
+              setSelRel(null)
+              if (group === focusGroup) setGroupPick(null)
+              else pickGroup(group)
+              return
+            }
+            setGroupPick(null)
             const id = edgeApi.current?.hitTest(e.clientX, e.clientY) ?? null
             setSelRow(null)
             setSelRel((s) => (id && id !== s ? id : null))
@@ -459,7 +487,7 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
           onlyRenderVisibleElements
           colorMode={dark ? 'dark' : 'light'}
         >
-          <EdgeCanvas edges={edges} style={edgeStyle} dark={dark} hover={hover} hoverEdge={hoverEdge} activeRel={activeRel} flow={flow} groups={model.groups} apiRef={edgeApi} />
+          <EdgeCanvas edges={edges} style={edgeStyle} dark={dark} hover={hover} hoverEdge={hoverEdge} activeRel={activeRel} flow={flow} groups={showGroups ? model.groups : NO_GROUPS} focusGroup={focusGroup} apiRef={edgeApi} />
           <Background variant={BackgroundVariant.Dots} gap={24} size={1.3} />
           <Controls showInteractive={false} />
           {nodes.length > 0 && (
