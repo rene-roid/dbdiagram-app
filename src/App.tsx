@@ -25,12 +25,13 @@ import {
   newId,
   saveDoc,
   saveIndex,
+  type DocData,
   type DocIndex,
 } from './store'
 import Editor, { type EditorHandle } from './components/Editor'
 import Diagram, { type DiagramHandle } from './components/Diagram'
 import { EDGE_STYLES, type EdgeStyle } from './components/EdgeCanvas'
-import { Dropdown, PopupMenu, type MenuItem } from './components/Menu'
+import { DiagramsMenu, Dropdown, PopupMenu, type MenuItem } from './components/Menu'
 
 const EMPTY: DiagramModel = { tables: [], relations: [], enums: [], groups: [] }
 const NO_ERRORS: DbmlError[] = []
@@ -169,11 +170,21 @@ export default function App() {
     openDoc(id)
   }
 
-  const createDoc = (name: string, text: string) => {
+  const createDoc = (name: string, text: string, data: DocData = { source: text, positions: {} }) => {
     saveNow()
     const id = newId()
-    saveDoc(id, { source: text, positions: {} })
-    openDoc(id, { source: text, positions: {} }, { ...index, docs: [...index.docs, { id, name, updatedAt: Date.now() }] })
+    saveDoc(id, data)
+    openDoc(id, data, { ...index, docs: [...index.docs, { id, name, updatedAt: Date.now() }] })
+  }
+
+  // the open diagram's latest state lives in refs, the others in storage
+  const docData = (id: string): DocData =>
+    id === session.id ? { source: sourceRef.current, positions: positions.current, layout: layoutRef.current } : loadDoc(id)
+
+  const duplicateDoc = (id: string) => {
+    const name = index.docs.find((d) => d.id === id)?.name ?? 'Untitled'
+    const data = docData(id)
+    createDoc(uniqueName(`${name} copy`), data.source, data)
   }
 
   const uniqueName = (base: string) => {
@@ -200,8 +211,8 @@ export default function App() {
     }
   }
 
-  const rename = (name: string) =>
-    commitIndex({ ...index, docs: index.docs.map((d) => (d.id === session.id ? { ...d, name } : d)) })
+  const rename = (name: string, id = session.id) =>
+    commitIndex({ ...index, docs: index.docs.map((d) => (d.id === id ? { ...d, name } : d)) })
 
   const activeDoc = index.docs.find((d) => d.id === session.id)
 
@@ -210,10 +221,10 @@ export default function App() {
     createDoc(uniqueName(file.name.replace(/\.(dbml|txt)$/i, '') || 'Imported'), await file.text())
   }
 
-  const download = () => {
+  const download = (id = session.id) => {
     const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([source], { type: 'text/plain' }))
-    a.download = `${activeDoc?.name ?? 'schema'}.dbml`
+    a.href = URL.createObjectURL(new Blob([docData(id).source], { type: 'text/plain' }))
+    a.download = `${index.docs.find((d) => d.id === id)?.name ?? 'schema'}.dbml`
     a.click()
     URL.revokeObjectURL(a.href)
   }
@@ -374,24 +385,10 @@ export default function App() {
     return model.tables.filter((t) => displayName(t).toLowerCase().includes(q)).slice(0, 12)
   }, [query, model])
 
-  const docItems: MenuItem[] = [
-    ...index.docs.map((d) => ({
-      label: (
-        <span className="doc-item">
-          <span className="check">{d.id === session.id ? '✓' : ''}</span>
-          {d.name}
-        </span>
-      ),
-      active: d.id === session.id,
-      onClick: () => switchTo(d.id),
-    })),
-    { divider: true, label: '' },
+  const docActions: MenuItem[] = [
     { label: '+ New diagram', onClick: () => createDoc(uniqueName('Untitled'), NEW_TEMPLATE) },
-    { label: 'Duplicate this diagram', onClick: () => createDoc(uniqueName(`${activeDoc?.name ?? 'Untitled'} copy`), sourceRef.current) },
     { label: 'New from sample', onClick: () => createDoc(uniqueName('Sample e-commerce'), SAMPLE) },
-    { label: 'Open .dbml file…', onClick: () => fileInput.current?.click() },
-    { divider: true, label: '' },
-    { label: 'Delete this diagram…', danger: true, onClick: () => removeDoc(session.id) },
+    { label: 'Import .dbml file…', onClick: () => fileInput.current?.click() },
   ]
 
   const chooseLayout = (kind: LayoutKind) => {
@@ -445,7 +442,16 @@ export default function App() {
     >
       <header className="toolbar">
         <img src="/icon.svg" alt="" className="logo" />
-        <Dropdown label={<strong>Diagrams ({index.docs.length})</strong>} items={docItems} title="Switch between saved diagrams" wide />
+        <DiagramsMenu
+          docs={index.docs}
+          activeId={session.id}
+          onOpen={switchTo}
+          onRename={(id, name) => rename(name, id)}
+          onDuplicate={duplicateDoc}
+          onDownload={download}
+          onDelete={removeDoc}
+          actions={docActions}
+        />
         <input
           className="doc-name"
           value={activeDoc?.name ?? ''}
@@ -460,7 +466,7 @@ export default function App() {
         <Dropdown label={`Lines: ${EDGE_STYLES.find((s) => s.value === edgeStyle)?.label}`} items={styleItems} title="How relations are drawn" />
         <button onClick={() => diagram.current?.fitView()}>Fit</button>
         <button onClick={() => void diagram.current?.exportPng()} title="Download the current view as an image">PNG</button>
-        <button onClick={download} title="Download the DBML source">Save .dbml</button>
+        <button onClick={() => download()} title="Download the DBML source">Save .dbml</button>
         <div className="grow" />
         <div className="search">
           <input

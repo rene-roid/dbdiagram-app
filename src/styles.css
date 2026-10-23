@@ -237,3 +237,23 @@ button.small { padding: 1px 8px; font-size: 12px; }
 .dropdown > button.on { box-shadow: 0 0 0 2px var(--accent-soft); }
 .search-results li:hover { background: var(--accent); color: #fff; }
 :root[data-theme='dark'] .search-results li:hover { color: #06222e; }
+
+/* diagrams menu */
+.dropdown > button .count { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 2px; font-size: 11px; font-weight: 600; line-height: 16px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); }
+.dropdown > button.on .count { background: rgba(255, 255, 255, 0.25); color: inherit; }
+.docs-panel { width: 300px; }
+.docs-head { padding: 4px 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.docs-list { margin: 0; padding: 0; list-style: none; max-height: 50vh; overflow-y: auto; }
+.doc-row { position: relative; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 6px 0 10px; border-radius: 6px; cursor: pointer; font-size: 14px; outline: none; }
+.doc-row:hover, .doc-row:focus-visible { background: var(--row-hover); }
+.doc-row.active { background: var(--accent-soft); font-weight: 600; }
+.doc-row.active::before { content: ''; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3px; border-radius: 2px; background: var(--accent); }
+.doc-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--muted); }
+.doc-row.active .doc-dot { border-color: var(--accent); background: var(--accent); }
+.doc-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-rename { flex: 1; min-width: 0; font: inherit; padding: 3px 6px; color: var(--text); background: var(--bg); border: 1px solid var(--accent); border-radius: 5px; outline: none; }
+.doc-actions { display: flex; gap: 2px; opacity: 0; }
+.doc-row:hover .doc-actions, .doc-row:focus-within .doc-actions { opacity: 1; }
+.doc-actions button { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: none; border-radius: 5px; color: var(--muted); }
+.doc-actions button:hover:not(:disabled) { background: var(--menu-bg); color: var(--text); }
+.doc-actions button.danger:hover:not(:disabled) { background: #ef4444; color: #fff; }
