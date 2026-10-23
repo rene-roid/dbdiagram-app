@@ -120,28 +120,35 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
     return out
   }, [model])
 
-  // Clicked column row: its relations get flowing dots, running from the "one" side to the "many" side.
+  // Clicked column row or relation line: its relations get flowing dots, running from the "one" side to the "many" side.
   const [selRow, setSelRow] = useState<{ tableId: string; column: string } | null>(null)
+  const [selRel, setSelRel] = useState<string | null>(null)
   const flow = useMemo(() => {
-    if (!selRow) return null
-    const col = model.tables.find((t) => t.id === selRow.tableId)?.columns.findIndex((c) => c.name === selRow.column) ?? -1
-    if (col < 0) return null
+    let match: ((e: EdgeRec) => boolean) | null = null
+    if (selRel) match = (e) => e.relId === selRel
+    else if (selRow) {
+      const col = model.tables.find((t) => t.id === selRow.tableId)?.columns.findIndex((c) => c.name === selRow.column) ?? -1
+      if (col >= 0) match = (e) => (e.source === selRow.tableId && e.fromCol === col) || (e.target === selRow.tableId && e.toCol === col)
+    }
+    if (!match) return null
     const out = new Map<string, FlowDir>()
     for (const e of edges) {
-      if (!((e.source === selRow.tableId && e.fromCol === col) || (e.target === selRow.tableId && e.toCol === col))) continue
+      if (!match(e)) continue
       out.set(e.id, e.fromCard === '1' && e.toCard === '*' ? 'fwd' : e.fromCard === '*' && e.toCard === '1' ? 'back' : 'both')
     }
     return out
-  }, [selRow, edges, model])
+  }, [selRow, selRel, edges, model])
 
   useEffect(() => {
-    if (!selRow) return
+    if (!selRow && !selRel) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !(e.target as HTMLElement | null)?.closest('input, textarea, .cm-editor')) setSelRow(null)
+      if (e.key !== 'Escape' || (e.target as HTMLElement | null)?.closest('input, textarea, .cm-editor')) return
+      setSelRow(null)
+      setSelRel(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selRow])
+  }, [selRow, selRel])
 
   // Rebuild nodes when the model changes, keeping positions of tables that already exist.
   useEffect(() => {
@@ -318,6 +325,7 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
         latest.current.onRowMenu(tableId, column, e.clientX, e.clientY)
       },
       selectRow(tableId, column) {
+        setSelRel(null)
         setSelRow((s) => (s && s.tableId === tableId && s.column === column ? null : { tableId, column }))
       },
     }),
@@ -419,7 +427,12 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
           onNodesChange={onNodesChange}
           onNodeDragStart={onDragStart}
           onNodeDragStop={commitPositions}
-          onPaneClick={() => setSelRow(null)}
+          onPaneClick={(e) => {
+            // a click on a relation line selects it, a click on empty canvas clears the selection
+            const id = edgeApi.current?.hitTest(e.clientX, e.clientY) ?? null
+            setSelRow(null)
+            setSelRel((s) => (id && id !== s ? id : null))
+          }}
           onPaneMouseMove={onPaneMouseMove}
           onPaneMouseLeave={() => setHoverEdge(null, 0, 0)}
           onPaneContextMenu={(e) => {
