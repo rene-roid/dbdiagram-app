@@ -16,9 +16,9 @@ import { toPng } from 'html-to-image'
 import type { DiagramModel, TableDef } from '../dbml'
 import { autoLayout, layoutModel, placeNew, type LayoutKind, type Positions } from '../layout'
 import { describeRelation, type Endpoint } from '../refs'
-import EdgeCanvas, { type EdgeLayerApi, type EdgeRec, type EdgeStyle } from './EdgeCanvas'
+import EdgeCanvas, { type EdgeLayerApi, type EdgeRec, type EdgeStyle, type FlowDir } from './EdgeCanvas'
 import TableNode, { type TableFlowNode } from './TableNode'
-import { TableActionsContext, type TableActions } from './tableActions'
+import { SelectedRowContext, TableActionsContext, rowKey, type TableActions } from './tableActions'
 
 const nodeTypes = { table: TableNode }
 
@@ -119,6 +119,29 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
     }
     return out
   }, [model])
+
+  // Clicked column row: its relations get flowing dots, running from the "one" side to the "many" side.
+  const [selRow, setSelRow] = useState<{ tableId: string; column: string } | null>(null)
+  const flow = useMemo(() => {
+    if (!selRow) return null
+    const col = model.tables.find((t) => t.id === selRow.tableId)?.columns.findIndex((c) => c.name === selRow.column) ?? -1
+    if (col < 0) return null
+    const out = new Map<string, FlowDir>()
+    for (const e of edges) {
+      if (!((e.source === selRow.tableId && e.fromCol === col) || (e.target === selRow.tableId && e.toCol === col))) continue
+      out.set(e.id, e.fromCard === '1' && e.toCard === '*' ? 'fwd' : e.fromCard === '*' && e.toCard === '1' ? 'back' : 'both')
+    }
+    return out
+  }, [selRow, edges, model])
+
+  useEffect(() => {
+    if (!selRow) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !(e.target as HTMLElement | null)?.closest('input, textarea, .cm-editor')) setSelRow(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selRow])
 
   // Rebuild nodes when the model changes, keeping positions of tables that already exist.
   useEffect(() => {
@@ -294,6 +317,9 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
         e.stopPropagation()
         latest.current.onRowMenu(tableId, column, e.clientX, e.clientY)
       },
+      selectRow(tableId, column) {
+        setSelRow((s) => (s && s.tableId === tableId && s.column === column ? null : { tableId, column }))
+      },
     }),
     [trackLink],
   )
@@ -385,6 +411,7 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
 
   return (
     <TableActionsContext.Provider value={actions}>
+     <SelectedRowContext.Provider value={selRow ? rowKey(selRow.tableId, selRow.column) : null}>
       <div className={`diagram-wrap${link ? ' linking' : ''}${tip ? ' edge-hover' : ''}`} ref={wrap}>
         <ReactFlow
           nodes={nodes}
@@ -392,6 +419,7 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
           onNodesChange={onNodesChange}
           onNodeDragStart={onDragStart}
           onNodeDragStop={commitPositions}
+          onPaneClick={() => setSelRow(null)}
           onPaneMouseMove={onPaneMouseMove}
           onPaneMouseLeave={() => setHoverEdge(null, 0, 0)}
           onPaneContextMenu={(e) => {
@@ -418,7 +446,7 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
           onlyRenderVisibleElements
           colorMode={dark ? 'dark' : 'light'}
         >
-          <EdgeCanvas edges={edges} style={edgeStyle} dark={dark} hover={hover} hoverEdge={hoverEdge} activeRel={activeRel} groups={model.groups} apiRef={edgeApi} />
+          <EdgeCanvas edges={edges} style={edgeStyle} dark={dark} hover={hover} hoverEdge={hoverEdge} activeRel={activeRel} flow={flow} groups={model.groups} apiRef={edgeApi} />
           <Background variant={BackgroundVariant.Dots} gap={24} size={1.3} />
           <Controls showInteractive={false} />
           {nodes.length > 0 && (
@@ -446,6 +474,7 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
         )}
         {picking && <div className="pick-banner">Click the column to link to · Esc to cancel</div>}
       </div>
+     </SelectedRowContext.Provider>
     </TableActionsContext.Provider>
   )
 })

@@ -31,6 +31,9 @@ export interface EdgeRec {
   hue: number
 }
 
+/** which way the dots run along an edge: from→to, to→from, or both (one-to-one, many-to-many) */
+export type FlowDir = 'fwd' | 'back' | 'both'
+
 export interface EdgeLayerApi {
   redraw(): void
   /** relation id of the line under the given screen point, if any */
@@ -47,6 +50,8 @@ interface Props {
   hoverEdge: MutableRefObject<string | null>
   /** relation whose edit menu is open */
   activeRel: string | null
+  /** edges (by id) of the clicked column row: highlighted, with dots flowing along them */
+  flow: Map<string, FlowDir> | null
   /** TableGroups, drawn as tinted boxes behind their tables */
   groups: GroupDef[]
   apiRef: MutableRefObject<EdgeLayerApi | null>
@@ -132,11 +137,11 @@ function drawMarker(ctx: Pather, x: number, y: number, dir: Side, card: Cardinal
 }
 
 /** All relations on a single canvas: one cheap draw per frame instead of one SVG per relation. */
-export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activeRel, groups, apiRef }: Props) {
+export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activeRel, flow, groups, apiRef }: Props) {
   const store = useStoreApi()
   const canvas = useRef<HTMLCanvasElement>(null)
-  const props = useRef({ edges, style, dark, activeRel, groups })
-  props.current = { edges, style, dark, activeRel, groups }
+  const props = useRef({ edges, style, dark, activeRel, flow, groups })
+  props.current = { edges, style, dark, activeRel, flow, groups }
   const hits = useRef<{ relId: string; path: Path2D }[]>([])
   const lastZoom = useRef(1)
   const raf = useRef(0)
@@ -157,7 +162,7 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
       }
       const ctx = el.getContext('2d')!
       const [tx0, ty0, zoom] = transform
-      const { edges, style, dark, activeRel, groups } = props.current
+      const { edges, style, dark, activeRel, flow, groups } = props.current
       hits.current = []
       lastZoom.current = zoom
 
@@ -212,10 +217,15 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
       for (const n of nodeLookup.values()) if (n.selected) focus.add(n.id)
       if (hover.current) focus.add(hover.current)
       const focusRel = hoverEdge.current ?? activeRel
-      const dim = focus.size > 0 || focusRel !== null
-      const dimAlpha = focus.size > 0 ? 0.07 : 0.2
+      const flowing = flow !== null && flow.size > 0
+      const dim = focus.size > 0 || focusRel !== null || flowing
+      const dimAlpha = focus.size > 0 ? 0.07 : flowing ? 0.12 : 0.2
 
       const baseWidth = Math.max(1.5, 1.7 / zoom)
+      // dots keep their on-screen look when zoomed out; offset is the distance they have travelled
+      const k = Math.max(1, 1 / zoom)
+      const spacing = 30 * k
+      const travel = (performance.now() / 1000) * 64 * k
       const showMarkers = zoom > 0.35
       const sat = dark ? 70 : 62
       const light = dark ? 68 : 40
@@ -255,6 +265,25 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
         trace(path, style, sx, sy, sSide, tx, ty, tSide)
         ctx.stroke(path)
         hits.current.push({ relId: e.relId, path })
+        const dir = flow?.get(e.id)
+        if (dir) {
+          // a zero-length round dash is a dot; moving the dash offset slides the dots along the line
+          const w = baseWidth * 2.6
+          ctx.setLineDash([0.01, spacing])
+          const pass = (sign: 1 | -1, shift: number) => {
+            ctx.lineDashOffset = -sign * travel + shift
+            ctx.strokeStyle = `hsla(${e.hue} 90% ${dark ? 70 : 42}% / 0.5)`
+            ctx.lineWidth = w * 2
+            ctx.stroke(path)
+            ctx.strokeStyle = dark ? `hsl(${e.hue} 100% 94%)` : '#fff'
+            ctx.lineWidth = w
+            ctx.stroke(path)
+          }
+          if (dir !== 'back') pass(1, 0)
+          if (dir !== 'fwd') pass(-1, dir === 'both' ? spacing / 2 : 0)
+          ctx.setLineDash([])
+          ctx.lineDashOffset = 0
+        }
         if (showMarkers && alpha > 0.1) {
           const marks = new Path2D()
           drawMarker(marks, sx, sy, sSide, e.fromCard)
@@ -267,10 +296,13 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
       // dimmed ones first so the highlighted relations always end up on top
       const active: EdgeRec[] = []
       for (const e of edges) {
-        if (dim && (focus.has(e.source) || focus.has(e.target) || e.relId === focusRel)) active.push(e)
+        if (dim && (focus.has(e.source) || focus.has(e.target) || e.relId === focusRel || flow?.has(e.id))) active.push(e)
         else drawEdge(e, false)
       }
       for (const e of active) drawEdge(e, true)
+
+      // the dots animate, so keep repainting for as long as some relation is flowing
+      if (flowing) raf.current = requestAnimationFrame(draw)
     }
 
     const schedule = () => {
@@ -304,7 +336,7 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
   // props changed: repaint
   useEffect(() => {
     apiRef.current?.redraw()
-  }, [edges, style, dark, activeRel, groups, apiRef])
+  }, [edges, style, dark, activeRel, flow, groups, apiRef])
 
   return <canvas ref={canvas} className="edge-canvas" />
 }

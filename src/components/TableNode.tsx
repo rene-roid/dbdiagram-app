@@ -1,9 +1,9 @@
-import { memo, useContext } from 'react'
+import { memo, useContext, useRef } from 'react'
 import { useStore, type Node, type NodeProps } from '@xyflow/react'
 import { displayName, type TableDef } from '../dbml'
 import { FOOTER_PAD, HEADER_H, ROW_H, TABLE_WIDTH } from '../metrics'
 import { columnRole, typeCategory } from '../semantic'
-import { TableActionsContext } from './tableActions'
+import { SelectedRowContext, TableActionsContext, rowKey } from './tableActions'
 
 export type TableNodeData = { table: TableDef; [key: string]: unknown }
 export type TableFlowNode = Node<TableNodeData, 'table'>
@@ -17,6 +17,8 @@ function TableNode({ data }: NodeProps<TableFlowNode>) {
   const { table } = data
   const compact = useStore(isZoomedOut)
   const actions = useContext(TableActionsContext)
+  const selectedRow = useContext(SelectedRowContext)
+  const down = useRef({ x: 0, y: 0 })
   const color = table.headerColor ?? ACCENT
 
   return (
@@ -36,12 +38,19 @@ function TableNode({ data }: NodeProps<TableFlowNode>) {
           {table.columns.map((c) => (
             <div
               key={c.name}
-              className="row"
+              className={selectedRow === rowKey(table.id, c.name) ? 'row selected' : 'row'}
               style={{ height: ROW_H }}
               data-table={table.id}
               data-col={c.name}
               title={c.note ?? undefined}
               onContextMenu={(e) => actions.openMenu(e, table.id, c.name)}
+              onPointerDown={(e) => (down.current = { x: e.clientX, y: e.clientY })}
+              onClick={(e) => {
+                // dragging a table ends in a click on the row under the pointer: ignore those
+                if (Math.hypot(e.clientX - down.current.x, e.clientY - down.current.y) > 3) return
+                if ((e.target as HTMLElement).closest('.port')) return
+                actions.selectRow(table.id, c.name)
+              }}
             >
               <span
                 className="port left nodrag nopan"
