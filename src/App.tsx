@@ -75,6 +75,8 @@ export default function App() {
   const [wrap, setWrap] = useState(() => pref('wrap', true))
   const [edgeStyle, setEdgeStyle] = useState<EdgeStyle>(() => pref('lineStyle', 'stepped'))
   const [showGroups, setShowGroups] = useState(() => pref('showGroups', true))
+  const [snapGrid, setSnapGrid] = useState(() => pref('snapGrid', false))
+  const [snapAlign, setSnapAlign] = useState(() => pref('snapAlign', true))
   const [layout, setLayout] = useState<LayoutKind>(first.layout ?? DEFAULT_LAYOUT)
   const layoutRef = useRef(layout)
   layoutRef.current = layout
@@ -114,6 +116,8 @@ export default function App() {
   useEffect(() => setPref('wrap', wrap), [wrap])
   useEffect(() => setPref('lineStyle', edgeStyle), [edgeStyle])
   useEffect(() => setPref('showGroups', showGroups), [showGroups])
+  useEffect(() => setPref('snapGrid', snapGrid), [snapGrid])
+  useEffect(() => setPref('snapAlign', snapAlign), [snapAlign])
 
   /* ---------- persistence ---------- */
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -415,6 +419,20 @@ export default function App() {
     onClick: () => setEdgeStyle(s.value),
   }))
 
+  const snapItems: MenuItem[] = [
+    {
+      label: <span className="doc-item"><span className="check">{snapGrid ? '✓' : ''}</span>To grid</span>,
+      hint: 'Dragged tables land on the background dots',
+      onClick: () => setSnapGrid((v) => !v),
+    },
+    {
+      label: <span className="doc-item"><span className="check">{snapAlign ? '✓' : ''}</span>To other tables</span>,
+      hint: 'Dragged tables line up with the edges and centres of nearby tables',
+      onClick: () => setSnapAlign((v) => !v),
+    },
+  ]
+  const snapLabel = snapGrid && snapAlign ? 'Grid + tables' : snapGrid ? 'Grid' : snapAlign ? 'Tables' : 'Off'
+
   const dragSplit = (e: React.PointerEvent) => {
     const rect = (e.currentTarget as HTMLElement).parentElement!.getBoundingClientRect()
     const move = (ev: PointerEvent) => setSplit(Math.min(0.8, Math.max(0.15, (ev.clientX - rect.left) / rect.width)))
@@ -466,6 +484,7 @@ export default function App() {
         <div className="sep" />
         <Dropdown label={`Sort: ${LAYOUTS.find((l) => l.kind === layout)?.label ?? ""}`} items={layoutItems} title="Auto sort: re-arrange all tables (remembered per diagram)" wide />
         <Dropdown label={`Lines: ${EDGE_STYLES.find((s) => s.value === edgeStyle)?.label}`} items={styleItems} title="How relations are drawn" />
+        <Dropdown label={`Snap: ${snapLabel}`} items={snapItems} title="Snapping while dragging tables (hold Alt to drag freely)" />
         <button
           onClick={() => setShowGroups((v) => !v)}
           className={showGroups ? 'on' : ''}
@@ -530,6 +549,8 @@ export default function App() {
             dark={dark}
             edgeStyle={edgeStyle}
             showGroups={showGroups}
+            snapGrid={snapGrid}
+            snapAlign={snapAlign}
             layoutKind={layout}
             activeRel={popup?.kind === 'edge' ? popup.relId : null}
             onEdgeClick={onEdgeClick}

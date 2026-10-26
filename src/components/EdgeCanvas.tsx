@@ -9,13 +9,14 @@ const hueOfName = (name: string) => {
   return h % 360
 }
 
-export type EdgeStyle = 'bundled' | 'curved' | 'stepped' | 'straight'
+export type EdgeStyle = 'bundled' | 'curved' | 'stepped' | 'straight' | 'lanes'
 
 export const EDGE_STYLES: { value: EdgeStyle; label: string }[] = [
   { value: 'bundled', label: 'Bundled' },
   { value: 'curved', label: 'Curved' },
   { value: 'stepped', label: 'Stepped' },
   { value: 'straight', label: 'Straight' },
+  { value: 'lanes', label: 'Lanes' },
 ]
 
 export interface EdgeRec {
@@ -29,6 +30,8 @@ export interface EdgeRec {
   fromCard: Cardinality
   toCard: Cardinality
   hue: number
+  /** colour in the lanes style, where every relation gets its own */
+  laneHue: number
 }
 
 /** which way the dots run along an edge: from→to, to→from, or both (one-to-one, many-to-many) */
@@ -64,6 +67,10 @@ interface Props {
 type Pather = Pick<Path2D, 'moveTo' | 'lineTo' | 'bezierCurveTo' | 'arcTo'>
 type Side = 1 | -1 // 1: anchored on the right edge of a table, -1: on the left
 type Pt = { x: number; y: number }
+type NodeLookup = ReturnType<ReturnType<typeof useStoreApi>['getState']>['nodeLookup']
+/** where an edge leaves its source table and enters its target */
+type Ends = { sx: number; sy: number; sSide: Side; tx: number; ty: number; tSide: Side }
+type Route = { pts: Pt[]; sSide: Side; tSide: Side }
 
 const rowY = (top: number, col: number) => top + HEADER_H + (col >= 0 ? col * ROW_H + ROW_H / 2 : -HEADER_H / 2)
 
@@ -78,6 +85,101 @@ function roundedPolyline(ctx: Pather, pts: Pt[], radius: number) {
   }
   const last = pts[pts.length - 1]
   ctx.lineTo(last.x, last.y)
+}
+
+function endsOf(e: EdgeRec, nodeLookup: NodeLookup): Ends | null {
+  const s = nodeLookup.get(e.source)
+  const t = nodeLookup.get(e.target)
+  if (!s || !t) return null
+  const sx0 = s.internals.positionAbsolute.x
+  const tx1 = t.internals.positionAbsolute.x
+  let sSide: Side
+  let tSide: Side
+  if (sx0 + TABLE_WIDTH + 24 <= tx1) [sSide, tSide] = [1, -1]
+  else if (tx1 + TABLE_WIDTH + 24 <= sx0) [sSide, tSide] = [-1, 1]
+  else [sSide, tSide] = [1, 1]
+  return {
+    sx: sSide === 1 ? sx0 + TABLE_WIDTH : sx0,
+    sy: rowY(s.internals.positionAbsolute.y, e.fromCol),
+    sSide,
+    tx: tSide === 1 ? tx1 + TABLE_WIDTH : tx1,
+    ty: rowY(t.internals.positionAbsolute.y, e.toCol),
+    tSide,
+  }
+}
+
+const LANE = 10 // distance between neighbouring lanes
+const STUB = 20 // room for the end marker before a line may turn
+
+/**
+ * Right-angled routes where no two lines share a vertical run: each one gets its own lane (a free x
+ * on a 10px grid) between the tables, and lines ending at the same row fan out a little so their
+ * horizontal runs don't overlap either. Short runs are placed first so they take the lanes nearest
+ * the source, which keeps nested lines from crossing.
+ */
+function routeLanes(edges: EdgeRec[], nodeLookup: NodeLookup) {
+  const items: { e: EdgeRec; g: Ends }[] = []
+  for (const e of edges) {
+    const g = endsOf(e, nodeLookup)
+    if (g) items.push({ e, g })
+  }
+
+  // lines ending at the same row (and side) of a table: spread them out, ordered by where they go
+  const atRow = new Map<string, { g: Ends; end: 's' | 't'; other: number }[]>()
+  const add = (key: string, g: Ends, end: 's' | 't', other: number) => {
+    const list = atRow.get(key)
+    if (list) list.push({ g, end, other })
+    else atRow.set(key, [{ g, end, other }])
+  }
+  for (const { e, g } of items) {
+    add(`${e.source}|${e.fromCol}|${g.sSide}`, g, 's', g.ty)
+    add(`${e.target}|${e.toCol}|${g.tSide}`, g, 't', g.sy)
+  }
+  for (const list of atRow.values()) {
+    if (list.length < 2) continue
+    list.sort((a, b) => a.other - b.other)
+    const step = Math.min(5, 16 / (list.length - 1))
+    list.forEach((it, i) => {
+      const dy = (i - (list.length - 1) / 2) * step
+      if (it.end === 's') it.g.sy += dy
+      else it.g.ty += dy
+    })
+  }
+
+  items.sort((a, b) => Math.abs(a.g.ty - a.g.sy) - Math.abs(b.g.ty - b.g.sy))
+  const taken = new Map<number, [number, number][]>() // lane index -> vertical runs already in it
+  const free = (lane: number, y0: number, y1: number) => !taken.get(lane)?.some(([a, b]) => a < y1 + LANE && b > y0 - LANE)
+  const routes = new Map<string, Route>()
+  for (const { e, g } of items) {
+    const { sx, sy, sSide, tx, ty, tSide } = g
+    const y0 = Math.min(sy, ty)
+    const y1 = Math.max(sy, ty)
+    if (sSide !== tSide && y1 - y0 < 0.5) {
+      routes.set(e.id, { pts: [{ x: sx, y: sy }, { x: tx, y: ty }], sSide, tSide })
+      continue
+    }
+    const dir = sSide
+    // facing tables: lanes between them; otherwise lanes beside the one that sticks out further
+    const start = sSide !== tSide ? sx + dir * STUB : (dir === 1 ? Math.max(sx, tx) : Math.min(sx, tx)) + dir * STUB
+    const end = sSide !== tSide ? tx - dir * STUB : start + dir * LANE * 60
+    const first = dir === 1 ? Math.ceil(start / LANE) : Math.floor(start / LANE)
+    const last = dir === 1 ? Math.floor(end / LANE) : Math.ceil(end / LANE)
+    let x: number
+    if ((last - first) * dir < 0) {
+      x = (sx + tx) / 2 // tables too close for any lane
+    } else {
+      let lane = first
+      while (lane !== last && !free(lane, y0, y1)) lane += dir
+      // every lane is busy: share the middle one
+      if (!free(lane, y0, y1)) lane = Math.round((first + last) / 2)
+      const runs = taken.get(lane)
+      if (runs) runs.push([y0, y1])
+      else taken.set(lane, [[y0, y1]])
+      x = lane * LANE
+    }
+    routes.set(e.id, { pts: [{ x: sx, y: sy }, { x, y: sy }, { x, y: ty }, { x: tx, y: ty }], sSide, tSide })
+  }
+  return routes
 }
 
 /**
@@ -111,6 +213,7 @@ function trace(ctx: Pather, style: EdgeStyle, sx: number, sy: number, sSide: Sid
       roundedPolyline(ctx, [{ x: sx, y: sy }, { x: channel, y: sy }, { x: channel, y: ty }, { x: tx, y: ty }], 10)
       return
     }
+    case 'lanes': // routed all at once by routeLanes
     case 'straight': {
       const stub = opposite ? Math.min(20, gap / 3) : 28
       ctx.moveTo(sx, sy)
@@ -149,6 +252,7 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
   const hits = useRef<{ relId: string; path: Path2D }[]>([])
   const titleHits = useRef<{ name: string; x: number; y: number; w: number; h: number }[]>([])
   const lastZoom = useRef(1)
+  const lanes = useRef<{ edges: EdgeRec[]; sig: number; routes: Map<string, Route> } | null>(null)
   const raf = useRef(0)
 
   useEffect(() => {
@@ -237,8 +341,24 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
       const spacing = 30 * k
       const travel = (performance.now() / 1000) * 64 * k
       const showMarkers = zoom > 0.35
-      const sat = dark ? 70 : 62
-      const light = dark ? 68 : 40
+      const laneMode = style === 'lanes'
+      const sat = laneMode ? (dark ? 75 : 70) : dark ? 70 : 62
+      const light = laneMode ? (dark ? 66 : 42) : dark ? 68 : 40
+      const restAlpha = laneMode ? 0.9 : dark ? 0.72 : 0.62
+
+      let routes: Map<string, Route> | null = null
+      if (laneMode) {
+        // lanes depend on where every table is, so only re-route when something moved
+        let sig = nodeLookup.size
+        for (const n of nodeLookup.values()) {
+          const p = n.internals.positionAbsolute
+          sig = (Math.imul(sig, 31) + Math.round(p.x * 4)) | 0
+          sig = (Math.imul(sig, 31) + Math.round(p.y * 4)) | 0
+        }
+        const c = lanes.current
+        if (!c || c.edges !== edges || c.sig !== sig) lanes.current = { edges, sig, routes: routeLanes(edges, nodeLookup) }
+        routes = lanes.current!.routes
+      }
 
       const drawEdge = (e: EdgeRec, active: boolean) => {
         const s = nodeLookup.get(e.source)
@@ -258,21 +378,24 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
         ) {
           return
         }
-        const sy = rowY(sy0, e.fromCol)
-        const ty = rowY(ty1, e.toCol)
-        let sSide: Side
-        let tSide: Side
-        if (sx0 + TABLE_WIDTH + 24 <= tx1) [sSide, tSide] = [1, -1]
-        else if (tx1 + TABLE_WIDTH + 24 <= sx0) [sSide, tSide] = [-1, 1]
-        else [sSide, tSide] = [1, 1]
-        const sx = sSide === 1 ? sx0 + TABLE_WIDTH : sx0
-        const tx = tSide === 1 ? tx1 + TABLE_WIDTH : tx1
-
-        const alpha = active ? 1 : dim ? dimAlpha : dark ? 0.72 : 0.62
-        ctx.strokeStyle = `hsla(${e.hue} ${active ? 85 : sat}% ${active ? (dark ? 72 : 36) : light}% / ${alpha})`
-        ctx.lineWidth = active ? baseWidth * 1.8 : baseWidth
+        const r: Route | Ends | null | undefined = routes ? routes.get(e.id) : endsOf(e, nodeLookup)
+        if (!r) return
         const path = new Path2D()
-        trace(path, style, sx, sy, sSide, tx, ty, tSide)
+        let sx, sy, tx, ty
+        if ('pts' in r) {
+          ;({ x: sx, y: sy } = r.pts[0])
+          ;({ x: tx, y: ty } = r.pts[r.pts.length - 1])
+          roundedPolyline(path, r.pts, 6)
+        } else {
+          ;({ sx, sy, tx, ty } = r)
+          trace(path, style, sx, sy, r.sSide, tx, ty, r.tSide)
+        }
+        const { sSide, tSide } = r
+
+        const hue = laneMode ? e.laneHue : e.hue
+        const alpha = active ? 1 : dim ? dimAlpha : restAlpha
+        ctx.strokeStyle = `hsla(${hue} ${active ? 85 : sat}% ${active ? (dark ? 72 : 36) : light}% / ${alpha})`
+        ctx.lineWidth = active ? baseWidth * 1.8 : baseWidth
         ctx.stroke(path)
         hits.current.push({ relId: e.relId, path })
         const dir = flow?.get(e.id)
@@ -282,10 +405,10 @@ export default function EdgeCanvas({ edges, style, dark, hover, hoverEdge, activ
           ctx.setLineDash([0.01, spacing])
           const pass = (sign: 1 | -1, shift: number) => {
             ctx.lineDashOffset = -sign * travel + shift
-            ctx.strokeStyle = `hsla(${e.hue} 90% ${dark ? 70 : 42}% / 0.5)`
+            ctx.strokeStyle = `hsla(${hue} 90% ${dark ? 70 : 42}% / 0.5)`
             ctx.lineWidth = w * 2
             ctx.stroke(path)
-            ctx.strokeStyle = dark ? `hsl(${e.hue} 100% 94%)` : '#fff'
+            ctx.strokeStyle = dark ? `hsl(${hue} 100% 94%)` : '#fff'
             ctx.lineWidth = w
             ctx.stroke(path)
           }

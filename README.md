@@ -19,7 +19,8 @@ A browser-based database diagram tool. Write your schema in [DBML](https://dbml.
   ![Right-click menu on a column](docs/column-menu-dark.png)
 
 - **Auto layout**: By group / schema, Hierarchy (left to right or top to bottom), Clusters, Compact, Grid A-Z and Circular. The sort is remembered per diagram.
-- **Line styles**: Bundled, Curved, Stepped or Straight.
+- **Line styles**: Bundled, Curved, Stepped, Straight, or Lanes (right-angled lines, each in its own colour and its own lane so none overlap).
+- **Snapping**: dragged tables can snap to the background grid and line up with the edges and centres of other tables, with guides shown while you drag. Hold Alt to drag freely.
 - **Multiple diagrams**: create, duplicate, rename, delete and switch between saved diagrams, or start from the built-in sample.
 
   ![The diagrams menu](docs/diagrams-menu-dark.png)

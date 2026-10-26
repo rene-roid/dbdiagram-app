@@ -11,17 +11,26 @@ import {
   useReactFlow,
   useStore,
   type NodeChange,
+  type NodePositionChange,
 } from '@xyflow/react'
 import { toPng } from 'html-to-image'
 import type { DiagramModel, GroupDef, TableDef } from '../dbml'
 import { autoLayout, layoutModel, placeNew, type LayoutKind, type Positions } from '../layout'
+import { TABLE_WIDTH, tableHeight } from '../metrics'
 import { describeRelation, type Endpoint } from '../refs'
+import { snapMove, type Guide } from '../snap'
 import EdgeCanvas, { type EdgeLayerApi, type EdgeRec, type EdgeStyle, type FlowDir } from './EdgeCanvas'
 import TableNode, { type TableFlowNode } from './TableNode'
 import { SelectedRowContext, TableActionsContext, rowKey, type TableActions } from './tableActions'
 
 const nodeTypes = { table: TableNode }
 const NO_GROUPS: GroupDef[] = []
+/** background dot spacing, which is also the snap grid */
+const GRID = 24
+/** how close (in screen pixels) a table edge has to get to another one before it snaps */
+const SNAP_PX = 7
+/** relation colours in the lanes style: red, blue, green, orange, purple, teal, pink, olive, indigo, lime, brown, sky, magenta, jade */
+const LANE_HUES = [2, 214, 128, 30, 275, 180, 325, 55, 245, 95, 15, 195, 300, 155]
 
 export interface DiagramHandle {
   autoLayout(kind: LayoutKind): void
@@ -43,6 +52,10 @@ interface Props {
   edgeStyle: EdgeStyle
   /** draw the TableGroup boxes behind their tables */
   showGroups: boolean
+  /** dragged tables snap to the background grid */
+  snapGrid: boolean
+  /** dragged tables snap into line with the edges and centres of other tables */
+  snapAlign: boolean
   /** sort mode used when a diagram without saved positions is first laid out */
   layoutKind: LayoutKind
   /** relation whose edit menu is open (kept highlighted) */
@@ -100,12 +113,15 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
   const edges = useMemo<EdgeRec[]>(() => {
     const byId = new Map(model.tables.map((t) => [t.id, t]))
     const out: EdgeRec[] = []
+    let drawn = 0
     for (const r of model.relations) {
       const a = byId.get(r.from.table)
       const b = byId.get(r.to.table)
       if (!a || !b) continue
       // colour by the table that holds the foreign key, so one table's relations share a colour
       const child = r.to.cardinality === '*' && r.from.cardinality === '1' ? b : a
+      // ...except in the lanes style, where every relation takes the next colour of a palette of well-separated hues
+      const laneHue = LANE_HUES[drawn++ % LANE_HUES.length]
       const n = Math.max(r.from.columns.length, r.to.columns.length, 1)
       for (let i = 0; i < n; i++) {
         out.push({
@@ -118,6 +134,7 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
           fromCard: r.from.cardinality,
           toCard: r.to.cardinality,
           hue: hueOf(child.id),
+          laneHue,
         })
       }
     }
@@ -199,9 +216,71 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model])
 
-  const onNodesChange = useCallback((changes: NodeChange<TableFlowNode>[]) => {
-    setNodes((ns) => applyNodeChanges(changes, ns))
+  // Alt held: drag freely, without snapping
+  const altDown = useRef(false)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      altDown.current = e.altKey
+    }
+    const onBlur = () => {
+      altDown.current = false
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKey)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKey)
+      window.removeEventListener('blur', onBlur)
+    }
   }, [])
+
+  const [guides, setGuides] = useState<Guide[]>([])
+
+  /** Shifts the tables being dragged (as one block) onto the grid or into line with the other tables. */
+  const snapChanges = useCallback(
+    (changes: NodeChange<TableFlowNode>[]) => {
+      const { snapGrid, snapAlign } = latest.current
+      // the drop arrives with dragging: false, but still needs the same snap as the last move
+      const moving = changes.filter((c): c is NodePositionChange => c.type === 'position' && !!c.position && (!!c.dragging || dragStart.current !== null))
+      if (!moving.length || !(snapGrid || snapAlign) || altDown.current) {
+        setGuides((g) => (g.length ? [] : g))
+        return changes
+      }
+      const ids = new Set(moving.map((c) => c.id))
+      const heightOf = (n: TableFlowNode | undefined) => (n ? tableHeight(n.data.table) : 0)
+      let x0 = Infinity
+      let y0 = Infinity
+      let x1 = -Infinity
+      let y1 = -Infinity
+      for (const c of moving) {
+        const p = c.position!
+        x0 = Math.min(x0, p.x)
+        y0 = Math.min(y0, p.y)
+        x1 = Math.max(x1, p.x + TABLE_WIDTH)
+        y1 = Math.max(y1, p.y + heightOf(rf.getNode(c.id) as TableFlowNode | undefined))
+      }
+      const others = snapAlign
+        ? rf.getNodes().filter((n) => !ids.has(n.id)).map((n) => ({ x: n.position.x, y: n.position.y, w: TABLE_WIDTH, h: heightOf(n as TableFlowNode) }))
+        : []
+      const { dx, dy, guides } = snapMove({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, others, {
+        grid: snapGrid ? GRID : null,
+        align: snapAlign,
+        threshold: SNAP_PX / rf.getZoom(),
+      })
+      setGuides(moving.some((c) => c.dragging) ? guides : [])
+      return changes.map((c) => (c.type === 'position' && ids.has(c.id) ? { ...c, position: { x: c.position!.x + dx, y: c.position!.y + dy } } : c))
+    },
+    [rf],
+  )
+
+  const onNodesChange = useCallback(
+    (changes: NodeChange<TableFlowNode>[]) => {
+      const snapped = snapChanges(changes)
+      setNodes((ns) => applyNodeChanges(snapped, ns))
+    },
+    [snapChanges],
+  )
 
   const pushHistory = useCallback((snapshot: Positions) => {
     const h = history.current
@@ -275,6 +354,7 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
     }
     if (moved && before) pushHistory(before)
     dragStart.current = null
+    setGuides([])
     positions.current = next
     onPositionsChange(next)
   }, [rf, onPositionsChange, pushHistory])
@@ -488,7 +568,8 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
           colorMode={dark ? 'dark' : 'light'}
         >
           <EdgeCanvas edges={edges} style={edgeStyle} dark={dark} hover={hover} hoverEdge={hoverEdge} activeRel={activeRel} flow={flow} groups={showGroups ? model.groups : NO_GROUPS} focusGroup={focusGroup} apiRef={edgeApi} />
-          <Background variant={BackgroundVariant.Dots} gap={24} size={1.3} />
+          {/* the offset puts the dots on multiples of the gap, where snapped tables land */}
+          <Background variant={BackgroundVariant.Dots} gap={GRID} offset={-GRID / 2} size={props.snapGrid ? 1.8 : 1.3} />
           <Controls showInteractive={false} />
           {nodes.length > 0 && (
             <MiniMap
@@ -500,6 +581,7 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
             />
           )}
           <ZoomBadge />
+          {guides.length > 0 && <SnapGuides guides={guides} />}
           <Panel position="top-left" className="history-panel">
             <button onClick={undo} disabled={!history.current.past.length} title="Undo move (Ctrl+Z)">↶</button>
             <button onClick={redo} disabled={!history.current.future.length} title="Redo move (Ctrl+Shift+Z)">↷</button>
@@ -519,6 +601,23 @@ const Inner = forwardRef<DiagramHandle, Props>(function Inner(props, ref) {
     </TableActionsContext.Provider>
   )
 })
+
+/** The lines a dragged table has snapped to, drawn over the tables. */
+function SnapGuides({ guides }: { guides: Guide[] }) {
+  const [tx, ty, zoom] = useStore((s) => s.transform)
+  const px = (v: number, axis: 'x' | 'y') => (axis === 'x' ? v * zoom + tx : v * zoom + ty)
+  return (
+    <svg className="snap-guides">
+      {guides.map((g, i) =>
+        g.axis === 'x' ? (
+          <line key={i} x1={px(g.at, 'x')} x2={px(g.at, 'x')} y1={px(g.from, 'y') - 12} y2={px(g.to, 'y') + 12} />
+        ) : (
+          <line key={i} y1={px(g.at, 'y')} y2={px(g.at, 'y')} x1={px(g.from, 'x') - 12} x2={px(g.to, 'x') + 12} />
+        ),
+      )}
+    </svg>
+  )
+}
 
 function ZoomBadge() {
   const zoom = useStore((s) => Math.round(s.transform[2] * 100))
