@@ -38,10 +38,18 @@ export function MenuList({ items, close }: { items: MenuItem[]; close: () => voi
           <li
             key={i}
             role="menuitem"
+            tabIndex={it.disabled ? -1 : 0}
+            aria-disabled={it.disabled || undefined}
             title={it.hint}
             className={`menu-item${it.active ? ' active' : ''}${it.disabled ? ' disabled' : ''}${it.danger ? ' danger' : ''}`}
             onClick={() => {
               if (it.disabled) return
+              close()
+              it.onClick?.()
+            }}
+            onKeyDown={(e) => {
+              if (it.disabled || (e.key !== 'Enter' && e.key !== ' ')) return
+              e.preventDefault()
               close()
               it.onClick?.()
             }}

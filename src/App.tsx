@@ -50,7 +50,13 @@ function pref<T>(key: string, fallback: T): T {
     return fallback
   }
 }
-const setPref = (key: string, value: unknown) => localStorage.setItem(`dbdiagram:${key}`, JSON.stringify(value))
+const setPref = (key: string, value: unknown) => {
+  try {
+    localStorage.setItem(`dbdiagram:${key}`, JSON.stringify(value))
+  } catch {
+    // storage unavailable or full: preferences just won't persist
+  }
+}
 
 type PopupState =
   | { kind: 'row'; x: number; y: number; tableId: string; column: string | null }
@@ -499,6 +505,7 @@ export default function App() {
         <div className="grow" />
         <div className="search">
           <input
+            aria-label="Find table"
             placeholder={`Find table (${model.tables.length})`}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
