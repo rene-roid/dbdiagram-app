@@ -45,7 +45,7 @@ function write(key: string, value: unknown): boolean {
 
 export function loadIndex(): DocIndex {
   const idx = read<DocIndex>(INDEX_KEY)
-  if (idx && idx.docs.length && idx.docs.some((d) => d.id === idx.activeId)) return idx
+  if (idx && Array.isArray(idx.docs) && idx.docs.length && idx.docs.some((d) => d.id === idx.activeId)) return idx
 
   const legacy = localStorage.getItem(LEGACY_SOURCE)
   const doc: DocMeta = { id: newId(), name: legacy ? 'Untitled' : 'Sample e-commerce', updatedAt: Date.now() }
