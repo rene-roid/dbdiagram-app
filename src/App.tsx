@@ -50,7 +50,13 @@ function pref<T>(key: string, fallback: T): T {
     return fallback
   }
 }
-const setPref = (key: string, value: unknown) => localStorage.setItem(`dbdiagram:${key}`, JSON.stringify(value))
+const setPref = (key: string, value: unknown) => {
+  try {
+    localStorage.setItem(`dbdiagram:${key}`, JSON.stringify(value))
+  } catch {
+    // storage full or unavailable: preferences just won't persist
+  }
+}
 
 type PopupState =
   | { kind: 'row'; x: number; y: number; tableId: string; column: string | null }
@@ -478,6 +484,7 @@ export default function App() {
           onChange={(e) => rename(e.target.value)}
           onBlur={(e) => !e.target.value.trim() && rename('Untitled')}
           spellCheck={false}
+          aria-label="Diagram name"
           title="Rename this diagram"
         />
         <input ref={fileInput} type="file" accept=".dbml,.txt,text/plain" hidden onChange={(e) => { void onFile(e.target.files?.[0]); e.target.value = '' }} />
@@ -499,6 +506,7 @@ export default function App() {
         <div className="grow" />
         <div className="search">
           <input
+            aria-label="Find table"
             placeholder={`Find table (${model.tables.length})`}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
